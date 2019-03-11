@@ -3,43 +3,121 @@ docker-devpi
 
 This repository contains a Dockerfile for [devpi pypi server](http://doc.devpi.net/latest/).
 
-You can use this container to speed up the `pip install` parts of your docker
-builds. This is done by adding an optional cache of your requirement python
-packages and speed up docker. The outcome is faster development without
-breaking builds.
+Use this container to create a PyPi repository that stores python packages and libraries 
+from which you can `pip install`.
 
-# Getting started
+# Setting up the repository
 
-## Installation
+## Deploying
 
-`docker pull muccg/devpi`
+We are hosting this PyPi repository in an on-prem server, if you need to re-deploy speak to the 
+Systems team to get the server details. There is a user setup called `devpi`. To deploy the 
+Dockerfile run the `deploy.sh` script.
 
-## Quickstart
 
-Start using
+## Building 
+
+Build the image using
 
 ```bash
-docker run -d --name devpi \
-    --publish 3141:3141 \
-    --volume /srv/docker/devpi:/data \
-    --env=DEVPI_PASSWORD=changemetoyourlongsecret \
-    --restart always \
-    muccg/devpi
+sudo docker build -t devpi .
 ```
 
-*Alternatively, you can use the sample [docker-compose.yml](docker-compose.yml)
-file to start the container using [Docker
-Compose](https://docs.docker.com/compose/)*
+## Running
 
-Please set ``DEVPI_PASSWORD`` to a secret otherwise an attacker can *execute
-arbitrary code*.
+Start the server using
 
-## Client side usage
+```bash
+sudo docker run -d --name devpi \
+    --publish 3141:3141 \
+    --volume $DEVPI_DATA:/data \
+    --env=DEVPI_PASSWORD=$DEVPI_PASSWORD \
+    --restart always \
+    devpi
+```
 
-To use this devpi cache to speed up your dockerfile builds, add the code below
-in your dockerfiles. This will add the devpi container an optional cache for
-pip. The docker containers will try using port 3141 on the docker host first
-and fall back on the normal pypi servers without breaking the build.
+You will need to set the ``DEVPI_PASSWORD`` and ``DEVPI_DATA`` environment variables.
+
+# Using the repository 
+
+## Uploading
+
+You will need to ``pip install devpi-client`` locally to manually upload packages to the 
+repository.
+
+First login to devpi using
+
+```bash
+devpi use http://$DEVPI_HOST:3141
+devpi login root --password=$DEVPI_PASSWORD
+devpi use root/starcount
+```
+
+where ``DEVPI_HOST`` is the IP address of the server running the repository. 
+
+Then from a directory of a project with a ``setup.py`` file run 
+
+```bash
+devpi upload 
+```
+
+This will build the package into a gztar formatted release file and upload it 
+to the current index using ``setup.py`` under the hood.
+
+You can also configure ``setup.py`` to automatically build & upload releases by
+configuring your index server in a `$HOME/.pypirc` file:
+
+```bash
+# content of $HOME/.pypirc
+[distutils]
+index-servers = 
+    starcount
+
+[starcount]
+repository: http://$DEVPI_HOST:3141/root/starcount/
+username: root
+password: $DEVPI_PASSWORD 
+```
+**NOTE: you will need to expand both DEVPI_HOST and DEVPI_PASSWORD here as plain text.** 
+
+Then build your release using
+```bash
+python setup.py sdist upload -r starcount 
+```
+
+**TODO** Replace this with Twine!
+
+## Installing
+
+Once uploaded to the repository a package can be installed using pip both manually
+and automatically.
+
+### Using pip manually
+To stick with usual convention using pip:
+```bash
+pip install package_name --index http://$DEVPI_HOST:3141/root/starcount/+simple/ --trusted-host $DEVPI_HOST
+```
+
+the `--trusted-host` flag is needed in order for pip to accept the non-https external repository.
+
+### Using pip automatically
+In order to avoid having to type the additional flags every time it is possible to store this 
+information in your local `~/.pip/pip.conf` file:
+
+```bash
+# content of $HOME/.pip/pip.conf
+[global]
+extra-index-url = http://$DEVPI_HOST:3141/root/starcount/+simple
+
+[install]
+trusted-host = $DEVPI_HOST
+
+```
+
+### In a Dockerfile
+To use the repository as the cache for your Dockerfile builds, add the following to your 
+Dockerfile. The docker containers will try and use our PyPi repository before falling back
+to normal servers.
 
 ```Dockerfile
 # Install netcat for ip route
@@ -47,41 +125,24 @@ RUN apt-get update \
  && apt-get install -y netcat \
  && rm -rf /var/lib/apt/lists/*
 
- # Use an optional pip cache to speed development
+ # Use Starcount's PyPi repository
 RUN export HOST_IP=$(ip route| awk '/^default/ {print $3}') \
  && mkdir -p ~/.pip \
  && echo [global] >> ~/.pip/pip.conf \
- && echo extra-index-url = http://$HOST_IP:3141/app/dev/+simple >> ~/.pip/pip.conf \
+ && echo extra-index-url = http://$HOST_IP:3141/root/starcount/+simple >> ~/.pip/pip.conf \
  && echo [install] >> ~/.pip/pip.conf \
  && echo trusted-host = $HOST_IP >> ~/.pip/pip.conf \
  && cat ~/.pip/pip.conf
 ```
 
-## Uploading python packages files
+# Extra bits
 
-You need to upload your python requirement to get any benefit from the devpi
-container. You can upload them using the bash code below a similar build
-environment.
-
-```bash
-pip wheel --download=packages --wheel-dir=wheelhouse -r requirements.txt
-pip install "devpi-client>=2.3.0" \
-&& export HOST_IP=$(ip route| awk '/^default/ {print $3}') \
-&& if devpi use http://$HOST_IP:3141>/dev/null; then \
-       devpi use http://$HOST_IP:3141/root/public --set-cfg \
-    && devpi login root --password=$DEVPI_PASSWORD  \
-    && devpi upload --from-dir --formats=* ./wheelhouse ./packages; \
-else \
-    echo "No started devpi container found at http://$HOST_IP:3141"; \
-fi
-```
-
-# Persistence
+## Persistence
 
 For devpi to preserve its state across container shutdown and startup you
-should mount a volume at `/data`. The quickstart command already includes this.
+should mount a volume at `/data`. The command above already includes this.
 
-# Security
+## Security
 
 Devpi creates a user named root by default, its password should be set with
 ``DEVPI_PASSWORD`` environment variable. Please set it, otherwise attackers can
